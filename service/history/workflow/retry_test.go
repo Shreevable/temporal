@@ -165,6 +165,22 @@ func Test_nextBackoffInterval(t *testing.T) {
 		assert.Equal(t, enumspb.RETRY_STATE_IN_PROGRESS, retryState)
 	})
 
+	t.Run("when max attempts is set to -1 (explicit unlimited) should keep trying", func(t *testing.T) {
+		initialDelay := 2 * time.Second
+		interval, retryState := nextBackoffInterval(
+			doNotCare(now),
+			10,
+			-1,
+			doNotCare(initInterval(initialDelay)),
+			doNotCare(maxInterval(30*time.Minute)),
+			doNotCare(expirationIn(60*time.Minute)),
+			2,
+			backoff.ExponentialBackoffAlgorithm,
+		)
+		assert.Equal(t, initialDelay*pow(2, 10-1), interval)
+		assert.Equal(t, enumspb.RETRY_STATE_IN_PROGRESS, retryState)
+	})
+
 	t.Run("if expiration is not 0 and expected delay beyond expiration should return no more retries", func(t *testing.T) {
 		initialDelay := 2 * time.Second
 		interval, retryState := nextBackoffInterval(

@@ -82,7 +82,14 @@ var DefaultDefaultRetrySettings = DefaultRetrySettings{
 
 // EnsureDefaults ensures the policy subfields, if not explicitly set, are set to the specified defaults
 func EnsureDefaults(originalPolicy *commonpb.RetryPolicy, defaultSettings DefaultRetrySettings) {
-	if originalPolicy.GetMaximumAttempts() == 0 {
+	// MaximumAttempts can't distinguish "never set" from an explicit 0 (proto3 zero value), so
+	// only default it when the rest of the policy is unset too; otherwise an explicit 0 is honored.
+	hasOtherExplicitField := timestamp.DurationValue(originalPolicy.GetInitialInterval()) != 0 ||
+		timestamp.DurationValue(originalPolicy.GetMaximumInterval()) != 0 ||
+		originalPolicy.GetBackoffCoefficient() != 0 ||
+		len(originalPolicy.GetNonRetryableErrorTypes()) != 0
+
+	if originalPolicy.GetMaximumAttempts() == 0 && !hasOtherExplicitField {
 		originalPolicy.MaximumAttempts = defaultSettings.MaximumAttempts
 	}
 
@@ -123,7 +130,8 @@ func Validate(policy *commonpb.RetryPolicy) error {
 	if timestamp.DurationValue(policy.GetMaximumInterval()) > 0 && timestamp.DurationValue(policy.GetMaximumInterval()) < timestamp.DurationValue(policy.GetInitialInterval()) {
 		return serviceerror.NewInvalidArgument("MaximumInterval cannot be less than InitialInterval on retry policy.")
 	}
-	if policy.GetMaximumAttempts() < 0 {
+	// -1 is a reserved sentinel for "explicitly unlimited", distinct from the 0 zero value.
+	if policy.GetMaximumAttempts() < -1 {
 		return serviceerror.NewInvalidArgument("MaximumAttempts cannot be negative on retry policy.")
 	}
 

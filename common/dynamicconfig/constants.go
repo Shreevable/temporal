@@ -2681,8 +2681,13 @@ the oldest task of each immediate queue category that has a backlog`,
 	DefaultActivityRetryPolicy = NewNamespaceTypedSetting(
 		"history.defaultActivityRetryPolicy",
 		retrypolicy.DefaultDefaultRetrySettings,
-		`DefaultActivityRetryPolicy represents the out-of-box retry policy for activities where
-the user has not specified an explicit RetryPolicy`,
+		`DefaultActivityRetryPolicy represents the out-of-box retry policy for unset fields
+where the user has set an explicit RetryPolicy, but not specified all the fields.
+MaximumAttempts is only filled in from this default when no other field on the policy is
+set; an explicit MaximumAttempts of 0 alongside any other explicit field is preserved as
+unlimited attempts. A policy with only MaximumAttempts=0 and nothing else set is
+indistinguishable from an empty policy and will still receive this default when non-zero;
+use MaximumAttempts == -1 to request unlimited attempts unambiguously in that case`,
 	)
 	DefaultWorkflowRetryPolicy = NewNamespaceTypedSetting(
 		"history.defaultWorkflowRetryPolicy",

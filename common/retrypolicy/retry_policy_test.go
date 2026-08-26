@@ -239,7 +239,7 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 			want:  defaultRetryPolicy,
 		},
 		{
-			name: "non-default InitialIntervalInSeconds is not set",
+			name: "non-default InitialIntervalInSeconds is set, MaximumAttempts stays unset (0)",
 			input: &commonpb.RetryPolicy{
 				InitialInterval: durationpb.New(2 * time.Second),
 			},
@@ -247,11 +247,11 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 				InitialInterval:    durationpb.New(2 * time.Second),
 				MaximumInterval:    durationpb.New(200 * time.Second),
 				BackoffCoefficient: 2,
-				MaximumAttempts:    120,
+				MaximumAttempts:    0,
 			},
 		},
 		{
-			name: "non-default MaximumIntervalInSeconds is not set",
+			name: "non-default MaximumIntervalInSeconds is set, MaximumAttempts stays unset (0)",
 			input: &commonpb.RetryPolicy{
 				MaximumInterval: durationpb.New(1000 * time.Second),
 			},
@@ -259,11 +259,11 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 				InitialInterval:    durationpb.New(1 * time.Second),
 				MaximumInterval:    durationpb.New(1000 * time.Second),
 				BackoffCoefficient: 2,
-				MaximumAttempts:    120,
+				MaximumAttempts:    0,
 			},
 		},
 		{
-			name: "non-default BackoffCoefficient is not set",
+			name: "non-default BackoffCoefficient is set, MaximumAttempts stays unset (0)",
 			input: &commonpb.RetryPolicy{
 				BackoffCoefficient: 1.5,
 			},
@@ -271,7 +271,7 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 				InitialInterval:    durationpb.New(1 * time.Second),
 				MaximumInterval:    durationpb.New(100 * time.Second),
 				BackoffCoefficient: 1.5,
-				MaximumAttempts:    120,
+				MaximumAttempts:    0,
 			},
 		},
 		{
@@ -287,7 +287,7 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 			},
 		},
 		{
-			name: "non-retryable errors are set",
+			name: "non-retryable errors are set, MaximumAttempts stays unset (0)",
 			input: &commonpb.RetryPolicy{
 				NonRetryableErrorTypes: []string{"testFailureType"},
 			},
@@ -295,7 +295,7 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 				InitialInterval:        durationpb.New(1 * time.Second),
 				MaximumInterval:        durationpb.New(100 * time.Second),
 				BackoffCoefficient:     2.0,
-				MaximumAttempts:        120,
+				MaximumAttempts:        0,
 				NonRetryableErrorTypes: []string{"testFailureType"},
 			},
 		},
@@ -307,6 +307,18 @@ func TestEnsureRetryPolicyDefaults(t *testing.T) {
 				MaximumInterval:    durationpb.New(100 * time.Second),
 				BackoffCoefficient: 2,
 				MaximumAttempts:    120,
+			},
+		},
+		{
+			name: "explicit unlimited (-1) survives a non-zero default",
+			input: &commonpb.RetryPolicy{
+				MaximumAttempts: -1,
+			},
+			want: &commonpb.RetryPolicy{
+				InitialInterval:    durationpb.New(1 * time.Second),
+				MaximumInterval:    durationpb.New(100 * time.Second),
+				BackoffCoefficient: 2,
+				MaximumAttempts:    -1,
 			},
 		},
 	}
@@ -386,6 +398,15 @@ func TestValidateRetryPolicy(t *testing.T) {
 			wantErrString: "MaximumAttempts cannot be negative on retry policy.",
 		},
 		{
+			name: "maximum attempts -1 is a valid unlimited sentinel",
+			input: &commonpb.RetryPolicy{
+				BackoffCoefficient: 2.0,
+				MaximumAttempts:    -1,
+			},
+			wantErr:       false,
+			wantErrString: "",
+		},
+		{
 			name: "timeout nonretryable error - valid type",
 			input: &commonpb.RetryPolicy{
 				BackoffCoefficient: 1,
@@ -434,4 +455,42 @@ func TestValidateRetryPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestIssue11721Fix mirrors https://github.com/temporalio/temporal/issues/11721.
+func TestIssue11721Fix(t *testing.T) {
+	namespaceDefault := DefaultRetrySettings{
+		InitialInterval:            DefaultDefaultRetrySettings.InitialInterval,
+		MaximumIntervalCoefficient: DefaultDefaultRetrySettings.MaximumIntervalCoefficient,
+		BackoffCoefficient:         DefaultDefaultRetrySettings.BackoffCoefficient,
+		MaximumAttempts:            5,
+	}
+
+	t.Run("case A: reporter repro - explicit MaximumAttempts=0 alongside other fields stays 0", func(t *testing.T) {
+		policy := &commonpb.RetryPolicy{
+			BackoffCoefficient: 3.0,
+			MaximumAttempts:    0,
+		}
+		EnsureDefaults(policy, namespaceDefault)
+		require.NoError(t, Validate(policy))
+		require.Equal(t, 3.0, policy.GetBackoffCoefficient())
+		require.Equal(t, int32(0), policy.GetMaximumAttempts())
+	})
+
+	t.Run("case B: fully empty policy still gets MaximumAttempts filled from the default", func(t *testing.T) {
+		policy := &commonpb.RetryPolicy{}
+		EnsureDefaults(policy, namespaceDefault)
+		require.NoError(t, Validate(policy))
+		require.Equal(t, int32(5), policy.GetMaximumAttempts())
+	})
+
+	t.Run("case C: MaximumAttempts=-1 still survives unchanged", func(t *testing.T) {
+		policy := &commonpb.RetryPolicy{
+			BackoffCoefficient: 3.0,
+			MaximumAttempts:    -1,
+		}
+		EnsureDefaults(policy, namespaceDefault)
+		require.NoError(t, Validate(policy))
+		require.Equal(t, int32(-1), policy.GetMaximumAttempts())
+	})
 }

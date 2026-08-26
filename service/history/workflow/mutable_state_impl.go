@@ -1466,6 +1466,10 @@ func (ms *MutableStateImpl) IsStickyTaskQueueSet() bool {
 	return ms.executionInfo.StickyTaskQueue != ""
 }
 
+func (ms *MutableStateImpl) ClearStickyTaskQueueOnDefiniteUnavailability() {
+	ms.workflowTaskManager.ClearStickyTaskQueueOnDefiniteUnavailability()
+}
+
 // TaskQueueScheduleToStartTimeout returns TaskQueue struct and corresponding StartToClose timeout.
 // Task queue kind (sticky or normal) is set based on comparison of normal task queue name
 // in mutable state and provided name.

@@ -1038,6 +1038,20 @@ func (m *workflowTaskStateMachine) recordTimeoutTasksForDeletion(workflowTask *h
 	}
 }
 
+// ClearStickyTaskQueueOnDefiniteUnavailability clears stickiness and best-effort deletes the
+// pending schedule-to-start timeout task, without failing or rescheduling the workflow task
+// itself: the caller must have already redirected it to the normal task queue. Only call this
+// when the sticky worker is known with certainty to be gone (e.g. after ShutdownWorker) —
+// unlike the lazy clear on a normal-queue poll, this forfeits its chance to reclaim the task
+// within the grace period.
+func (m *workflowTaskStateMachine) ClearStickyTaskQueueOnDefiniteUnavailability() {
+	if !m.ms.IsStickyTaskQueueSet() {
+		return
+	}
+	m.recordTimeoutTasksForDeletion(m.getWorkflowTaskInfo())
+	m.ms.ClearStickyTaskQueue()
+}
+
 func (m *workflowTaskStateMachine) failWorkflowTask(
 	incrementAttempt bool,
 ) error {

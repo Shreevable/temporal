@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -344,7 +345,7 @@ func (t *transferQueueActiveTaskExecutor) processWorkflowTask(
 		historyi.TransactionPolicyActive,
 	)
 
-	if _, ok := err.(*serviceerrors.StickyWorkerUnavailable); ok {
+	if stickyErr, ok := err.(*serviceerrors.StickyWorkerUnavailable); ok {
 		// sticky worker is unavailable, switch to original normal task queue
 		taskQueue = &taskqueuepb.TaskQueue{
 			// do not use task.TaskQueue which is sticky, use original normal task queue from mutable state
@@ -366,9 +367,44 @@ func (t *transferQueueActiveTaskExecutor) processWorkflowTask(
 			priority,
 			historyi.TransactionPolicyActive,
 		)
+
+		if err == nil && stickyErr.DefinitelyUnavailable {
+			// The sticky worker is known with certainty to be gone for good, so there's no
+			// reason to wait out the grace period: clear stickiness now so the already-armed
+			// timeout timer no-ops instead of writing a spurious WorkflowTaskTimedOut event.
+			t.clearStickyTaskQueueOnDefiniteUnavailability(ctx, transferTask)
+		}
 	}
 
 	return err
+}
+
+// clearStickyTaskQueueOnDefiniteUnavailability re-acquires the workflow lock that
+// processWorkflowTask released before its matching calls, to eagerly clear stickiness. It is
+// best-effort: any failure here just leaves it to the pending schedule-to-start timeout task.
+func (t *transferQueueActiveTaskExecutor) clearStickyTaskQueueOnDefiniteUnavailability(
+	ctx context.Context,
+	transferTask *tasks.WorkflowTask,
+) {
+	weContext, release, err := getWorkflowExecutionContextForTask(ctx, t.shardContext, t.cache, transferTask)
+	if err != nil {
+		return
+	}
+	defer func() { release(nil) }()
+
+	err = t.updateWorkflowExecution(ctx, weContext, false, func(mutableState historyi.MutableState) error {
+		workflowTask := mutableState.GetWorkflowTaskByID(transferTask.ScheduledEventID)
+		if workflowTask == nil || transferTask.Stamp != workflowTask.Stamp {
+			// Workflow task already completed/superseded by the time we got the lock back.
+			return consts.ErrStaleReference
+		}
+		mutableState.ClearStickyTaskQueueOnDefiniteUnavailability()
+		return nil
+	})
+	if err != nil && !errors.Is(err, consts.ErrStaleReference) {
+		t.logger.Warn("Failed to eagerly clear sticky task queue after definite sticky worker shutdown.",
+			tag.Error(err))
+	}
 }
 
 func (t *transferQueueActiveTaskExecutor) processCloseExecution(

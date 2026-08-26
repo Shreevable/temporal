@@ -269,6 +269,8 @@ func newMatchingEngine(
 		timeSource:          clock.NewRealTimeSource(),
 		visibilityManager:   mockVisibilityManager,
 		nexusEndpointClient: newEndpointClient(config.NexusEndpointsRefreshInterval, nexusEndpointManager),
+
+		recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 	}
 	e.nexusEndpointsOwnershipLostCh.Store(make(chan struct{}))
 	return e
@@ -1364,7 +1366,9 @@ func (s *matchingEngineSuite) TestAddWorkflowTaskDoesNotLoadSticky() {
 		ScheduleToStartTimeout: timestamp.DurationFromSeconds(100),
 	}
 	_, _, err := s.matchingEngine.AddWorkflowTask(context.Background(), &addRequest)
-	s.ErrorAs(err, new(*serviceerrors.StickyWorkerUnavailable))
+	var stickyErr *serviceerrors.StickyWorkerUnavailable
+	s.ErrorAs(err, &stickyErr)
+	s.False(stickyErr.DefinitelyUnavailable)
 	// check loaded queues
 	s.matchingEngine.partitionsLock.RLock()
 	defer s.matchingEngine.partitionsLock.RUnlock()
@@ -2311,9 +2315,12 @@ func (s *matchingEngineSuite) TestForceUnloadTaskQueue() {
 	s.NotNil(unloadResp)
 	s.True(unloadResp.WasLoaded)
 
-	// Adding a task should now fast fail
+	// Adding a task should now fast fail, reporting the sticky worker as definitely unavailable
+	// since the queue was explicitly force-unloaded rather than merely idle.
 	_, _, err = s.matchingEngine.AddWorkflowTask(ctx, &addTaskRequest)
-	s.ErrorAs(err, new(*serviceerrors.StickyWorkerUnavailable))
+	var stickyErr *serviceerrors.StickyWorkerUnavailable
+	s.ErrorAs(err, &stickyErr)
+	s.True(stickyErr.DefinitelyUnavailable)
 }
 
 func (s *matchingEngineSuite) TestMultipleEnginesActivitiesRangeStealing() {
@@ -6374,10 +6381,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		mockNsRegistry := namespace.NewMockRegistry(ctrl)
 		mockNsRegistry.EXPECT().GetNamespaceName(gomock.Any()).Return(namespace.Name("test-namespace"), nil)
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		resp, err := engine.CancelOutstandingWorkerPolls(context.Background(),
@@ -6399,10 +6407,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		mockNsRegistry := namespace.NewMockRegistry(ctrl)
 		mockNsRegistry.EXPECT().GetNamespaceName(gomock.Any()).Return(namespace.Name("test-namespace"), nil)
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		workerKey := "test-worker"
@@ -6435,10 +6444,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		worker1Cancelled := false
 		worker2Cancelled := false
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		// Set up pollers for worker1 and worker2
@@ -6467,10 +6477,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		mockNsRegistry := namespace.NewMockRegistry(ctrl)
 		mockNsRegistry.EXPECT().GetNamespaceName(gomock.Any()).Return(namespace.Name("test-namespace"), nil)
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		workerKey := "test-worker"
@@ -6528,14 +6539,15 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		}
 
 		engine := &matchingEngineImpl{
-			config:                config,
-			namespaceRegistry:     mockNsRegistry,
-			matchingRawClient:     rawClient,
-			hostInfoProvider:      mockHostInfoProvider,
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
-			partitions:            map[tqid.PartitionKey]taskQueuePartitionManager{rootPartition.Key(): mockPM},
+			config:                           config,
+			namespaceRegistry:                mockNsRegistry,
+			matchingRawClient:                rawClient,
+			hostInfoProvider:                 mockHostInfoProvider,
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
+			partitions:                       map[tqid.PartitionKey]taskQueuePartitionManager{rootPartition.Key(): mockPM},
 		}
 
 		workerKey := "test-worker"
@@ -6557,9 +6569,10 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		// so that child matching hosts reject new polls from shutting-down workers.
 		t.Parallel()
 		engine := &matchingEngineImpl{
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		workerKey := "test-worker"
@@ -6590,10 +6603,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		mockNsRegistry := namespace.NewMockRegistry(ctrl)
 		mockNsRegistry.EXPECT().GetNamespaceName(gomock.Any()).Return(namespace.Name("test-namespace"), nil)
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		_, err := engine.CancelOutstandingWorkerPolls(context.Background(),
@@ -6615,10 +6629,11 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		mockNsRegistry := namespace.NewMockRegistry(ctrl)
 		mockNsRegistry.EXPECT().GetNamespaceName(gomock.Any()).Return(namespace.Name("test-namespace"), nil).AnyTimes()
 		engine := &matchingEngineImpl{
-			config:                defaultTestConfig(),
-			namespaceRegistry:     mockNsRegistry,
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			config:                           defaultTestConfig(),
+			namespaceRegistry:                mockNsRegistry,
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		workerKey := "test-worker"
@@ -6685,14 +6700,15 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		}
 
 		engine := &matchingEngineImpl{
-			config:                config,
-			namespaceRegistry:     mockNamespaceCache,
-			matchingRawClient:     rawClient,
-			hostInfoProvider:      mockHostInfoProvider,
-			logger:                log.NewNoopLogger(),
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			partitions:            map[tqid.PartitionKey]taskQueuePartitionManager{rootPartition.Key(): mockPM},
+			config:                           config,
+			namespaceRegistry:                mockNamespaceCache,
+			matchingRawClient:                rawClient,
+			hostInfoProvider:                 mockHostInfoProvider,
+			logger:                           log.NewNoopLogger(),
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			partitions:                       map[tqid.PartitionKey]taskQueuePartitionManager{rootPartition.Key(): mockPM},
 		}
 
 		return engine, mockMatchingClient
@@ -6931,14 +6947,15 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 		}
 
 		engine := &matchingEngineImpl{
-			config:                config,
-			namespaceRegistry:     mockNamespaceCache,
-			matchingRawClient:     rawClient,
-			hostInfoProvider:      mockHostInfoProvider,
-			logger:                log.NewNoopLogger(),
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			partitions:            partitionsMap,
+			config:                           config,
+			namespaceRegistry:                mockNamespaceCache,
+			matchingRawClient:                rawClient,
+			hostInfoProvider:                 mockHostInfoProvider,
+			logger:                           log.NewNoopLogger(),
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			partitions:                       partitionsMap,
 		}
 
 		_, err := engine.CancelOutstandingWorkerPolls(context.Background(),
@@ -6957,9 +6974,10 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 	t.Run("partition API: empty partitions returns gracefully", func(t *testing.T) {
 		t.Parallel()
 		engine := &matchingEngineImpl{
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		resp, err := engine.CancelOutstandingWorkerPollsPartition(context.Background(),
@@ -6976,9 +6994,10 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 	t.Run("partition API: empty workers returns gracefully", func(t *testing.T) {
 		t.Parallel()
 		engine := &matchingEngineImpl{
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		partitionProto := &taskqueuespb.TaskQueuePartition{
@@ -6999,9 +7018,10 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 	t.Run("partition API: cancels polls and populates shutdown cache", func(t *testing.T) {
 		t.Parallel()
 		engine := &matchingEngineImpl{
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 		engine.workerInstancePollers.Add("worker-key", "poller-0", func() {})
 
@@ -7028,9 +7048,10 @@ func TestCancelOutstandingWorkerPolls(t *testing.T) {
 	t.Run("partition API: cancels pollers across multiple batched partitions", func(t *testing.T) {
 		t.Parallel()
 		engine := &matchingEngineImpl{
-			logger:                log.NewNoopLogger(),
-			workerInstancePollers: workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-			shutdownWorkers:       cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			logger:                           log.NewNoopLogger(),
+			workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+			shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+			recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
 		}
 
 		// Register pollers on different partitions for the same worker.

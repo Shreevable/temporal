@@ -43,7 +43,11 @@ message SyncStateFailure {
   uint32 archetype_id = 6;
 }
 
-message StickyWorkerUnavailableFailure {}
+message StickyWorkerUnavailableFailure {
+  // True if the sticky worker gracefully shut down and will not return, as opposed to
+  // merely having no recent poller.
+  bool definitely_unavailable = 1;
+}
 
 // Deprecated. Only used in WV2. [cleanup-old-wv]
 message ObsoleteDispatchBuildIdFailure {}

@@ -446,6 +446,11 @@ func (t *timerQueueActiveTaskExecutor) executeWorkflowTaskTimeoutTask(
 			// workflowTask has already started
 			return nil
 		}
+		if !mutableState.IsStickyTaskQueueSet() {
+			// Stickiness was already cleared (see transferQueueActiveTaskExecutor.processWorkflowTask),
+			// so the workflow task is already redirected to the normal queue; this timer is stale.
+			return nil
+		}
 
 		t.emitTimeoutMetricScopeWithNamespaceTag(
 			namespace.ID(mutableState.GetExecutionInfo().NamespaceId),

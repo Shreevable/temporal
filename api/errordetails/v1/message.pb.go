@@ -360,9 +360,12 @@ func (x *SyncStateFailure) GetArchetypeId() uint32 {
 }
 
 type StickyWorkerUnavailableFailure struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// True if the sticky worker gracefully shut down and will not return, as opposed to
+	// merely having no recent poller.
+	DefinitelyUnavailable bool `protobuf:"varint,1,opt,name=definitely_unavailable,json=definitelyUnavailable,proto3" json:"definitely_unavailable,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *StickyWorkerUnavailableFailure) Reset() {
@@ -393,6 +396,13 @@ func (x *StickyWorkerUnavailableFailure) ProtoReflect() protoreflect.Message {
 // Deprecated: Use StickyWorkerUnavailableFailure.ProtoReflect.Descriptor instead.
 func (*StickyWorkerUnavailableFailure) Descriptor() ([]byte, []int) {
 	return file_temporal_server_api_errordetails_v1_message_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *StickyWorkerUnavailableFailure) GetDefinitelyUnavailable() bool {
+	if x != nil {
+		return x.DefinitelyUnavailable
+	}
+	return false
 }
 
 // Deprecated. Only used in WV2. [cleanup-old-wv]
@@ -578,8 +588,9 @@ const file_temporal_server_api_errordetails_v1_message_proto_rawDesc = "" +
 	"\x06run_id\x18\x03 \x01(\tR\x05runId\x12j\n" +
 	"\x14versioned_transition\x18\x04 \x01(\v27.temporal.server.api.persistence.v1.VersionedTransitionR\x13versionedTransition\x12]\n" +
 	"\x11version_histories\x18\x05 \x01(\v20.temporal.server.api.history.v1.VersionHistoriesR\x10versionHistories\x12!\n" +
-	"\farchetype_id\x18\x06 \x01(\rR\varchetypeId\" \n" +
-	"\x1eStickyWorkerUnavailableFailure\" \n" +
+	"\farchetype_id\x18\x06 \x01(\rR\varchetypeId\"W\n" +
+	"\x1eStickyWorkerUnavailableFailure\x125\n" +
+	"\x16definitely_unavailable\x18\x01 \x01(\bR\x15definitelyUnavailable\" \n" +
 	"\x1eObsoleteDispatchBuildIdFailure\"\x1d\n" +
 	"\x1bObsoleteMatchingTaskFailure\"&\n" +
 	"$ActivityStartDuringTransitionFailure\"\x1d\n" +

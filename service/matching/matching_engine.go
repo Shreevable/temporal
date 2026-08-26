@@ -88,6 +88,12 @@ const (
 	// LRU eviction ensures the oldest entries (least likely to re-poll) are evicted first.
 	shutdownWorkersCacheMaxSize = 10000
 	shutdownWorkersCacheTTL     = 30 * time.Second
+
+	stickyPartitionShutdownCacheMaxSize = 10000
+	// Much longer than shutdownWorkersCacheTTL: sticky partition names are never reused, so
+	// there's no correctness reason to expire entries quickly, only a memory bound. Eviction
+	// just means that workflow falls back to today's grace-period behavior.
+	stickyPartitionShutdownCacheTTL = time.Hour
 	// If a compatible poller hasn't been seen for this time, we fail the CommitBuildId
 	// Set to 70s so that it's a little over the max time a poller should be kept waiting.
 	versioningPollerSeenWindow        = 70 * time.Second
@@ -191,6 +197,10 @@ type (
 		// Polls from workers in this cache are rejected immediately to prevent
 		// zombie re-polls from stealing tasks after ShutdownWorker.
 		shutdownWorkers cache.Cache
+		// recentlyShutdownStickyPartitions is a TTL cache of partitions explicitly force-unloaded
+		// (as opposed to idle or never loaded), so AddWorkflowTask/QueryWorkflow can tell history
+		// the sticky worker is definitely gone rather than merely unresponsive.
+		recentlyShutdownStickyPartitions cache.Cache
 		// Only set if global namespaces are enabled on the cluster.
 		namespaceReplicationQueue persistence.NamespaceReplicationQueue
 		// Lock to serialize replication queue updates.
@@ -316,19 +326,20 @@ func NewEngine(
 			loadedTaskQueuePartitionCount: make(map[taskQueueCounterKey]int),
 			loadedPhysicalTaskQueueCount:  make(map[taskQueueCounterKey]int),
 		},
-		config:                    config,
-		versionChecker:            headers.NewDefaultVersionChecker(),
-		testHooks:                 testHooks,
-		queryResults:              collection.NewSyncMap[string, chan *queryResult](),
-		nexusResults:              collection.NewSyncMap[string, chan *nexusResult](),
-		outstandingPollers:        collection.NewSyncMap[string, context.CancelFunc](),
-		workerInstancePollers:     workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
-		shutdownWorkers:           cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
-		namespaceReplicationQueue: namespaceReplicationQueue,
-		userDataUpdateBatchers:    collection.NewSyncMap[namespace.ID, *stream_batcher.Batcher[*userDataUpdate, error]](),
-		rateLimiter:               rateLimiter,
-		taskHookFactories:         taskHookFactories,
-		partitionScalerFactory:    partitionScalerFactory,
+		config:                           config,
+		versionChecker:                   headers.NewDefaultVersionChecker(),
+		testHooks:                        testHooks,
+		queryResults:                     collection.NewSyncMap[string, chan *queryResult](),
+		nexusResults:                     collection.NewSyncMap[string, chan *nexusResult](),
+		outstandingPollers:               collection.NewSyncMap[string, context.CancelFunc](),
+		workerInstancePollers:            workerPollerTracker{pollers: make(map[string]map[string]context.CancelFunc)},
+		shutdownWorkers:                  cache.New(shutdownWorkersCacheMaxSize, &cache.Options{TTL: shutdownWorkersCacheTTL}),
+		recentlyShutdownStickyPartitions: cache.New(stickyPartitionShutdownCacheMaxSize, &cache.Options{TTL: stickyPartitionShutdownCacheTTL}),
+		namespaceReplicationQueue:        namespaceReplicationQueue,
+		userDataUpdateBatchers:           collection.NewSyncMap[namespace.ID, *stream_batcher.Batcher[*userDataUpdate, error]](),
+		rateLimiter:                      rateLimiter,
+		taskHookFactories:                taskHookFactories,
+		partitionScalerFactory:           partitionScalerFactory,
 	}
 	e.nexusEndpointsOwnershipLostCh.Store(make(chan struct{}))
 	e.reachabilityCache = newReachabilityCache(
@@ -599,7 +610,7 @@ func (e *matchingEngineImpl) AddWorkflowTask(
 	if err != nil {
 		return "", false, err
 	} else if sticky && !stickyWorkerAvailable(pm) {
-		return "", false, serviceerrors.NewStickyWorkerUnavailable()
+		return "", false, e.stickyWorkerUnavailableError(partition)
 	}
 
 	// This needs to move to history see - https://go.temporal.io/server/issues/181
@@ -1131,7 +1142,7 @@ func (e *matchingEngineImpl) QueryWorkflow(
 	if err != nil {
 		return nil, err
 	} else if sticky && !stickyWorkerAvailable(pm) {
-		return nil, serviceerrors.NewStickyWorkerUnavailable()
+		return nil, e.stickyWorkerUnavailableError(partition)
 	}
 
 	taskID := uuid.NewString()
@@ -2546,6 +2557,13 @@ func (e *matchingEngineImpl) ForceUnloadTaskQueuePartition(
 ) (*matchingservice.ForceUnloadTaskQueuePartitionResponse, error) {
 	partition := tqid.PartitionFromPartitionProto(req.GetTaskQueuePartition(), req.GetNamespaceId())
 
+	// Record this force-unload so a later sticky AddWorkflowTask/QueryWorkflow attempt can report
+	// the worker as definitely gone. ShutdownWorker identifies its target by task queue name only
+	// (no sticky_name oneof), so partition here always resolves to a NormalPartition — that's
+	// fine, since tqid.PartitionKey doesn't encode sticky vs. normal kind, so it shares the same
+	// Key() as the StickyPartition AddWorkflowTask looks up.
+	e.recentlyShutdownStickyPartitions.Put(partition.Key(), struct{}{})
+
 	wasLoaded := e.unloadTaskQueuePartitionByKey(partition, nil, unloadCauseForce)
 	return &matchingservice.ForceUnloadTaskQueuePartitionResponse{WasLoaded: wasLoaded}, nil
 }
@@ -3610,6 +3628,16 @@ func (e *matchingEngineImpl) reviveBuildId(ns *namespace.Namespace, taskQueue st
 // be processed on the normal queue.
 func stickyWorkerAvailable(pm taskQueuePartitionManager) bool {
 	return pm != nil && pm.HasPollerAfter("", time.Now().Add(-stickyPollerUnavailableWindow))
+}
+
+// stickyWorkerUnavailableError returns a StickyWorkerUnavailable error for the given sticky
+// partition, distinguishing a partition that was explicitly, gracefully shut down (via
+// ShutdownWorker) from one that merely has no recent poller.
+func (e *matchingEngineImpl) stickyWorkerUnavailableError(partition tqid.Partition) error {
+	if e.recentlyShutdownStickyPartitions.Get(partition.Key()) != nil {
+		return serviceerrors.NewStickyWorkerShutdown()
+	}
+	return serviceerrors.NewStickyWorkerUnavailable()
 }
 
 func buildRateLimitConfig(update *workflowservice.UpdateTaskQueueConfigRequest_RateLimitUpdate, updateTime *timestamppb.Timestamp, updateIdentity string) *taskqueuepb.RateLimitConfig {

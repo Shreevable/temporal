@@ -227,6 +227,7 @@ type (
 		CurrentTaskQueue() *taskqueuepb.TaskQueue
 		SetStickyTaskQueue(name string, scheduleToStartTimeout *durationpb.Duration)
 		ClearStickyTaskQueue()
+		ClearStickyTaskQueueOnDefiniteUnavailability()
 		IsStickyTaskQueueSet() bool
 		TaskQueueScheduleToStartTimeout(name string) (*taskqueuepb.TaskQueue, *durationpb.Duration)
 

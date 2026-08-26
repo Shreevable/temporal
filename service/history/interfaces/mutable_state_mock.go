@@ -1834,6 +1834,18 @@ func (mr *MockMutableStateMockRecorder) ClearStickyTaskQueue() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearStickyTaskQueue", reflect.TypeOf((*MockMutableState)(nil).ClearStickyTaskQueue))
 }
 
+// ClearStickyTaskQueueOnDefiniteUnavailability mocks base method.
+func (m *MockMutableState) ClearStickyTaskQueueOnDefiniteUnavailability() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "ClearStickyTaskQueueOnDefiniteUnavailability")
+}
+
+// ClearStickyTaskQueueOnDefiniteUnavailability indicates an expected call of ClearStickyTaskQueueOnDefiniteUnavailability.
+func (mr *MockMutableStateMockRecorder) ClearStickyTaskQueueOnDefiniteUnavailability() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClearStickyTaskQueueOnDefiniteUnavailability", reflect.TypeOf((*MockMutableState)(nil).ClearStickyTaskQueueOnDefiniteUnavailability))
+}
+
 // ClearTransientWorkflowTask mocks base method.
 func (m *MockMutableState) ClearTransientWorkflowTask() error {
 	m.ctrl.T.Helper()

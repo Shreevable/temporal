@@ -1245,6 +1245,57 @@ func (s *timerQueueActiveTaskExecutorSuite) TestWorkflowTaskTimeout_StampMismatc
 	s.ErrorIs(resp.ExecutionErr, consts.ErrStaleReference)
 }
 
+func (s *timerQueueActiveTaskExecutorSuite) TestWorkflowTaskTimeout_ScheduleToStart_StickyAlreadyCleared() {
+	execution := &commonpb.WorkflowExecution{
+		WorkflowId: "some random workflow ID",
+		RunId:      uuid.NewString(),
+	}
+	workflowType := "some random workflow type"
+	taskQueueName := "some random task queue"
+
+	mutableState := workflow.TestGlobalMutableState(s.mockShard, s.mockShard.GetEventsCache(), s.logger, s.version, execution.GetWorkflowId(), execution.GetRunId())
+	_, err := mutableState.AddWorkflowExecutionStartedEvent(
+		execution,
+		&historyservice.StartWorkflowExecutionRequest{
+			Attempt:     1,
+			NamespaceId: s.namespaceID.String(),
+			StartRequest: &workflowservice.StartWorkflowExecutionRequest{
+				WorkflowType:        &commonpb.WorkflowType{Name: workflowType},
+				TaskQueue:           &taskqueuepb.TaskQueue{Name: taskQueueName},
+				WorkflowRunTimeout:  durationpb.New(200 * time.Second),
+				WorkflowTaskTimeout: durationpb.New(1 * time.Second),
+			},
+		},
+	)
+	s.NoError(err)
+
+	// Workflow task is scheduled but not started, and stickiness is already cleared.
+	wt := addWorkflowTaskScheduledEvent(mutableState)
+	s.False(mutableState.IsStickyTaskQueueSet())
+
+	timerTask := &tasks.WorkflowTaskTimeoutTask{
+		WorkflowKey: definition.NewWorkflowKey(
+			s.namespaceID.String(),
+			execution.GetWorkflowId(),
+			execution.GetRunId(),
+		),
+		ScheduleAttempt:     wt.Attempt,
+		Version:             s.version,
+		TaskID:              s.mustGenerateTaskID(),
+		TimeoutType:         enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START,
+		VisibilityTimestamp: s.now,
+		EventID:             wt.ScheduledEventID,
+		Stamp:               wt.Stamp,
+	}
+
+	persistenceMutableState := s.createPersistenceMutableState(mutableState, wt.ScheduledEventID, wt.Version)
+	s.mockExecutionMgr.EXPECT().GetWorkflowExecution(gomock.Any(), gomock.Any()).Return(&persistence.GetWorkflowExecutionResponse{State: persistenceMutableState}, nil)
+	// No UpdateWorkflowExecution expectation: the timer must no-op without persisting anything.
+
+	resp := s.timerQueueActiveTaskExecutor.Execute(context.Background(), s.newTaskExecutable(timerTask))
+	s.NoError(resp.ExecutionErr)
+}
+
 func (s *timerQueueActiveTaskExecutorSuite) TestWorkflowBackoffTimer_Fire() {
 	execution := &commonpb.WorkflowExecution{
 		WorkflowId: "some random workflow ID",

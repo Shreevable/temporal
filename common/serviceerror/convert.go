@@ -38,9 +38,9 @@ func FromStatus(st *status.Status) error {
 			return newStalePartitionCounts(st)
 		}
 	case codes.Unavailable:
-		switch errDetails.(type) {
+		switch errDetails := errDetails.(type) {
 		case *errordetailsspb.StickyWorkerUnavailableFailure:
-			return newStickyWorkerUnavailable(st)
+			return newStickyWorkerUnavailable(st, errDetails)
 		}
 	case codes.FailedPrecondition:
 		switch errDetails.(type) {
